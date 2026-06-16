@@ -1,0 +1,12 @@
+version: "3.8"
+services:
+  sealcut:
+    build: .
+    image: sealcut:latest
+    container_name: sealcut
+    ports:
+      - "8000:8000"
+    volumes:
+      - /path/to/models:/app/models
+    mem_limit: 4g
+    restart: unless-stopped
