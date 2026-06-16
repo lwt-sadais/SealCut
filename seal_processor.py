@@ -90,6 +90,9 @@ _WHITE_THRESHOLD = 220
 _GRAY_DIFF_THRESHOLD = 15
 _COLOR_DIFF_THRESHOLD = 20
 
+# 裁剪 padding（像素）
+_CROP_PADDING = 8
+
 
 def extract_seal_bytes(
     image_bytes: bytes,
@@ -156,8 +159,17 @@ def extract_seal_bytes(
         channel = img_array[:, :, i]
         channel[valid_pixels] = np.clip(channel[valid_pixels] * _COLOR_ENHANCE_FACTOR, 0, 255)
 
-    # 编码为 PNG 字节
+    # 裁剪为印章最小矩形区域 + padding
     result_image = Image.fromarray(img_array)
+    bbox = result_image.getbbox()
+    if bbox is not None:
+        left = max(bbox[0] - _CROP_PADDING, 0)
+        upper = max(bbox[1] - _CROP_PADDING, 0)
+        right = min(bbox[2] + _CROP_PADDING, result_image.width)
+        lower = min(bbox[3] + _CROP_PADDING, result_image.height)
+        result_image = result_image.crop((left, upper, right, lower))
+
+    # 编码为 PNG 字节
     buffer = BytesIO()
     result_image.save(buffer, format="PNG")
     buffer.seek(0)
