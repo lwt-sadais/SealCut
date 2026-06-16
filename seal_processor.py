@@ -1,3 +1,6 @@
+import logging
+import os
+import time
 from enum import Enum
 from io import BytesIO
 from typing import Optional
@@ -6,6 +9,8 @@ import numpy as np
 from PIL import Image
 from rembg import remove, new_session
 from rembg.sessions.base import BaseSession
+
+logger = logging.getLogger("sealcut")
 
 
 class SealColor(str, Enum):
@@ -24,7 +29,14 @@ def init_session() -> None:
     """预热 rembg 模型，应用启动时调用一次"""
     global _session
     if _session is None:
+        model_path = os.path.expanduser(
+            os.getenv("U2NET_HOME", os.path.join(os.getenv("XDG_DATA_HOME", "~"), ".u2net"))
+        )
+        logger.info("正在加载 U2-Net 模型，路径: %s", model_path)
+        start = time.time()
         _session = new_session("u2net")
+        elapsed = time.time() - start
+        logger.info("U2-Net 模型加载完成，耗时: %.2f 秒", elapsed)
 
 
 def _classify_seal_pixels_red(r: np.ndarray, g: np.ndarray, b: np.ndarray) -> np.ndarray:

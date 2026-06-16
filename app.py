@@ -1,6 +1,8 @@
 import asyncio
 import base64
 import logging
+import os
+import time
 from contextlib import asynccontextmanager
 from io import BytesIO
 
@@ -11,14 +13,24 @@ from PIL import Image
 
 from seal_processor import SealColor, extract_seal_bytes, init_session
 
+# 配置日志：输出到 stdout，Docker 友好
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 logger = logging.getLogger("sealcut")
+
+# 环境变量控制是否输出请求日志，默认关闭
+_REQUEST_LOG_ENABLED = os.getenv("SEALCUT_REQUEST_LOG", "").lower() in ("1", "true", "yes")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期：启动时预热模型，关闭时清理资源"""
+    logger.info("SealCut API 正在启动...")
     init_session()
-    logger.info("SealCut API started, rembg model loaded")
+    logger.info("SealCut API 服务就绪，监听 0.0.0.0:8000")
     yield
 
 
@@ -94,10 +106,18 @@ async def extract_seal(
     # 获取信号量，控制并发
     async with _semaphore:
         try:
+            if _REQUEST_LOG_ENABLED:
+                logger.info(
+                    "处理请求: file=%s, seal_color=%s, type=%d",
+                    file.filename, seal_color, type,
+                )
+            start = time.time()
             loop = asyncio.get_event_loop()
             result_bytes = await loop.run_in_executor(
                 None, extract_seal_bytes, content, color_enum
             )
+            if _REQUEST_LOG_ENABLED:
+                logger.info("请求处理完成，耗时: %.2f 秒", time.time() - start)
         except Exception as e:
             logger.exception("印章提取处理失败")
             raise HTTPException(status_code=500, detail="图片处理失败")
