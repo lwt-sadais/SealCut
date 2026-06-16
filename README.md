@@ -77,7 +77,8 @@ curl -X POST http://localhost:8000/api/v1/seal/extract \
 
 需要预先下载 U2-Net 模型文件 `u2net.onnx`（约 176MB）：
 
-- 下载地址：`https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx`
+- 下载地址：`https://sadais-oss.oss-cn-hangzhou.aliyuncs.com/bigdata/u2net.onnx`
+- 备用地址：`https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx`
 - MD5：`60024c5c889badc19c04ad937298a77b`
 
 将下载的文件放到宿主机某个目录下，例如 `/data/sealcut-models/u2net.onnx`。
