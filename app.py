@@ -60,8 +60,9 @@ async def request_logging_middleware(request: Request, call_next):
     if _REQUEST_LOG_ENABLED:
         # 构建 RequestValues
         params = []
-        if form is not None:
-            for key, value in form.multi_items():
+        form_data = request.state.form_data
+        if form_data is not None:
+            for key, value in form_data.multi_items():
                 if isinstance(value, UploadFile):
                     params.append(f"{key}={value.filename}")
                 else:
