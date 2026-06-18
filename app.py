@@ -8,7 +8,7 @@ from datetime import datetime
 from io import BytesIO
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from PIL import Image
 
@@ -45,31 +45,10 @@ app = FastAPI(
 
 @app.middleware("http")
 async def request_logging_middleware(request: Request, call_next):
-    """请求日志中间件：记录请求进入（含参数）和完成（含状态码和耗时）"""
+    """请求日志中间件：记录请求进入和完成（含状态码和耗时）"""
     start = time.time()
 
-    # 读取 Form 数据并缓存到 request.state，供接口使用
-    # 仅对 multipart/form-data 或 application/x-www-form-urlencoded 请求解析
-    content_type = request.headers.get("content-type", "")
-    if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
-        form = await request.form()
-        request.state.form_data = form
-    else:
-        request.state.form_data = None
-
     if _REQUEST_LOG_ENABLED:
-        # 构建 RequestValues
-        params = []
-        form_data = request.state.form_data
-        if form_data is not None:
-            for key, value in form_data.multi_items():
-                if isinstance(value, UploadFile):
-                    params.append(f"{key}={value.filename}")
-                else:
-                    params.append(f"{key}={value}")
-        request_values = ", ".join(params)
-
-        # 输出多行请求日志
         separator = "*" * 78
         request_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         logger.info(separator)
@@ -77,7 +56,6 @@ async def request_logging_middleware(request: Request, call_next):
         logger.info("###########  RequestURL:     %s", str(request.url))
         logger.info("###########  RemoteMethod:   %s", request.method)
         logger.info("###########  getContentType: %s", request.headers.get("content-type", ""))
-        logger.info("###########  RequestValues:  %s", request_values)
         logger.info(separator)
 
     response = await call_next(request)
@@ -105,7 +83,11 @@ async def health():
 
 
 @app.post("/api/v1/seal/extract")
-async def extract_seal(request: Request):
+async def extract_seal(
+    file: UploadFile = File(..., description="包含印章的图片文件"),
+    seal_color: str = Form("auto", description="印章颜色: red/blue/black/auto"),
+    type: int = Form(0, description="返回格式: 0=PNG二进制, 1=JSON+Base64"),
+):
     """
     提取印章图片
 
@@ -113,20 +95,9 @@ async def extract_seal(request: Request):
     - **type**: 返回格式，0=直接返回 PNG 二进制，1=返回 JSON（Base64 编码）
     - **seal_color**: 印章颜色，支持 red/blue/black，auto 为自动检测
     """
-    # 从中间件缓存的 Form 数据中取值
-    form = request.state.form_data
-    file: UploadFile = form.get("file")
-    seal_color: str = form.get("seal_color", "auto")
-    type_val = form.get("type", "0")
-
-    # type 参数转为 int
-    try:
-        type_int = int(type_val)
-    except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=400,
-            detail=f"无效的 type '{type_val}'，可选值：0（二进制）或 1（JSON+Base64）",
-        )
+    # 参数日志
+    if _REQUEST_LOG_ENABLED:
+        logger.info("请求参数: file=%s, seal_color=%s, type=%d", file.filename, seal_color, type)
 
     # 校验 seal_color
     try:
@@ -138,10 +109,10 @@ async def extract_seal(request: Request):
         )
 
     # 校验 type
-    if type_int not in (0, 1):
+    if type not in (0, 1):
         raise HTTPException(
             status_code=400,
-            detail=f"无效的 type '{type_int}'，可选值：0（二进制）或 1（JSON+Base64）",
+            detail=f"无效的 type '{type}'，可选值：0（二进制）或 1（JSON+Base64）",
         )
 
     # 校验文件
@@ -179,7 +150,7 @@ async def extract_seal(request: Request):
             raise HTTPException(status_code=500, detail="图片处理失败")
 
     # 根据 type 参数返回不同格式
-    if type_int == 0:
+    if type == 0:
         return Response(content=result_bytes, media_type="image/png")
     else:
         b64 = base64.b64encode(result_bytes).decode("ascii")

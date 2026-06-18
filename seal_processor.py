@@ -94,6 +94,37 @@ _COLOR_DIFF_THRESHOLD = 20
 _CROP_PADDING = 8
 
 
+def _has_alpha_channel(image: Image.Image) -> bool:
+    """检测图片是否包含有意义的 alpha 通道（非全不透明）"""
+    if image.mode != "RGBA":
+        return False
+    alpha = np.array(image)[:, :, 3]
+    return bool((alpha < 255).any())
+
+
+def _remove_bg(image: Image.Image, session: BaseSession) -> Image.Image:
+    """使用 rembg 移除背景，关闭 alpha_matting 避免彩色印章半透明问题"""
+    return remove(image, alpha_matting=False, session=session)
+
+
+def _remove_bg_combined_black(image: Image.Image, session: BaseSession) -> Image.Image:
+    """黑色印章专用：正向+反色 rembg 合成，解决 U2-Net 将黑色当背景的问题"""
+    img_arr = np.array(image.convert("RGBA"))
+
+    # 正向 rembg：保留印章内部不透明像素
+    alpha_fwd = np.array(_remove_bg(image, session))[:, :, 3].astype(np.float32)
+
+    # 反色后 rembg：U2-Net 对"深色背景+浅色物体"识别好
+    inverted = Image.fromarray(255 - img_arr[:, :, :3])
+    inverted_rgba = inverted.convert("RGBA")
+    alpha_inv = np.array(_remove_bg(inverted_rgba, session))[:, :, 3].astype(np.float32)
+
+    # 合并 alpha = max(正向, 反向)
+    combined_alpha = np.maximum(alpha_fwd, alpha_inv)
+    img_arr[:, :, 3] = combined_alpha.astype(np.uint8)
+    return Image.fromarray(img_arr)
+
+
 def extract_seal_bytes(
     image_bytes: bytes,
     seal_color: SealColor = SealColor.AUTO,
@@ -112,20 +143,26 @@ def extract_seal_bytes(
         init_session()
 
     # 从字节流读取图片
-    input_image = Image.open(BytesIO(image_bytes))
+    input_image = Image.open(BytesIO(image_bytes)).convert("RGBA")
+    img_array = np.array(input_image)
 
-    # 使用共享 session 进行背景移除
-    output_image = remove(
-        input_image,
-        alpha_matting=True,
-        alpha_matting_foreground_threshold=240,
-        alpha_matting_background_threshold=10,
-        alpha_matting_erode_size=10,
-        session=_session,
-    )
+    # 阶段一：输入分流 — 有 alpha 通道则跳过 rembg
+    if _has_alpha_channel(input_image):
+        logger.info("输入图片已有 alpha 通道，跳过 rembg 背景移除")
+    else:
+        # 阶段二：按印章颜色选择 rembg 策略
+        # 先用原图做一次颜色预检测（白底图片的白色像素不影响主导色判定）
+        if seal_color == SealColor.AUTO:
+            seal_color = _auto_detect_color(img_array)
 
-    # 转为 numpy 数组进行颜色过滤
-    img_array = np.array(output_image)
+        if seal_color == SealColor.BLACK:
+            logger.info("黑色印章：使用正向+反色 rembg 合成")
+            output_image = _remove_bg_combined_black(input_image, _session)
+        else:
+            logger.info("彩色印章：使用关闭 alpha_matting 的 rembg")
+            output_image = _remove_bg(input_image, _session)
+
+        img_array = np.array(output_image)
     r = img_array[:, :, 0]
     g = img_array[:, :, 1]
     b = img_array[:, :, 2]
@@ -152,6 +189,11 @@ def extract_seal_bytes(
     # 移除非印章像素
     pixels_to_remove = (white_pixels | gray_pixels | similar_colors) & (~is_seal_color)
     img_array[:, :, 3][pixels_to_remove] = 0
+
+    # Alpha 修补：印章颜色像素中 alpha 过低的提升到最低值，防止半透明残缺
+    _ALPHA_FLOOR = 200
+    low_alpha_seal = is_seal_color & (img_array[:, :, 3] > 0) & (img_array[:, :, 3] < _ALPHA_FLOOR)
+    img_array[:, :, 3][low_alpha_seal] = _ALPHA_FLOOR
 
     # 增强印章颜色
     valid_pixels = img_array[:, :, 3] > 0
