@@ -40,8 +40,8 @@ def init_session() -> None:
 
 
 def _classify_seal_pixels_red(r: np.ndarray, g: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """红色印章分类：R 通道主导"""
-    return (r > 150) & (r > g * 1.5) & (r > b * 1.5)
+    """红色印章分类：R 通道主导（1.3 倍，兼容印章边缘混合色）"""
+    return (r > 120) & (r > g * 1.3) & (r > b * 1.3)
 
 
 def _classify_seal_pixels_blue(r: np.ndarray, g: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -86,12 +86,30 @@ def _auto_detect_color(img_array: np.ndarray) -> SealColor:
 _COLOR_ENHANCE_FACTOR = 1.1
 
 # 像素过滤阈值
-_WHITE_THRESHOLD = 220
+_WHITE_THRESHOLD = 200
 _GRAY_DIFF_THRESHOLD = 15
 _COLOR_DIFF_THRESHOLD = 20
+_BRIGHTNESS_THRESHOLD = 210
 
 # 裁剪 padding（像素）
 _CROP_PADDING = 8
+
+
+def _is_background_pixel(r: np.ndarray, g: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """检测背景像素：白色、灰色、低饱和度或高亮度"""
+    r16 = r.astype(np.int16)
+    g16 = g.astype(np.int16)
+    b16 = b.astype(np.int16)
+    white = (r > _WHITE_THRESHOLD) & (g > _WHITE_THRESHOLD) & (b > _WHITE_THRESHOLD)
+    brightness = (r16 + g16 + b16) / 3.0
+    gray = (np.abs(r16 - g16) < _GRAY_DIFF_THRESHOLD) & \
+           (np.abs(g16 - b16) < _GRAY_DIFF_THRESHOLD) & \
+           (np.abs(r16 - b16) < _GRAY_DIFF_THRESHOLD) & \
+           (brightness > _BRIGHTNESS_THRESHOLD)
+    color_diff = np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)
+    low_saturation = (color_diff < _COLOR_DIFF_THRESHOLD) & (brightness > _BRIGHTNESS_THRESHOLD)
+    high_brightness = brightness > _BRIGHTNESS_THRESHOLD
+    return white | gray | low_saturation | high_brightness
 
 
 def _has_alpha_channel(image: Image.Image) -> bool:
@@ -171,23 +189,15 @@ def extract_seal_bytes(
     if seal_color == SealColor.AUTO:
         seal_color = _auto_detect_color(img_array)
 
-    # 通用非印章像素检测（转 int16 避免 uint8 减法溢出）
-    white_pixels = (r > _WHITE_THRESHOLD) & (g > _WHITE_THRESHOLD) & (b > _WHITE_THRESHOLD)
-    r16 = r.astype(np.int16)
-    g16 = g.astype(np.int16)
-    b16 = b.astype(np.int16)
-    gray_pixels = (np.abs(r16 - g16) < _GRAY_DIFF_THRESHOLD) & \
-                  (np.abs(g16 - b16) < _GRAY_DIFF_THRESHOLD) & \
-                  (np.abs(r16 - b16) < _GRAY_DIFF_THRESHOLD)
-    color_diff = np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)
-    similar_colors = color_diff < _COLOR_DIFF_THRESHOLD
+    # 通用非印章像素检测
+    is_background = _is_background_pixel(r, g, b)
 
     # 颜色特定的印章分类
     classifier = _CLASSIFIERS[seal_color]
     is_seal_color = classifier(r, g, b)
 
     # 移除非印章像素
-    pixels_to_remove = (white_pixels | gray_pixels | similar_colors) & (~is_seal_color)
+    pixels_to_remove = is_background & (~is_seal_color)
     img_array[:, :, 3][pixels_to_remove] = 0
 
     # Alpha 修补：印章颜色像素中 alpha 过低的提升到最低值，防止半透明残缺
